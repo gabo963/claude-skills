@@ -98,9 +98,19 @@ Steps:
 4. Verify the fix doesn't break surrounding code
 ```
 
-## Step 6 — Clean Up
+## Step 6 — Validate Fixes
 
-After fixes are applied (or the user selects "none"):
+After all agents complete:
+
+1. Check each agent's result for success or failure
+2. If any agent reports failure or uncertainty, tell the user which items were not fixed and why
+3. Ask: **"Skip these, or retry manually?"**
+
+If all agents succeeded (or the user skips failures), proceed to cleanup.
+
+## Step 7 — Clean Up
+
+After fixes are validated (or the user selects "none"):
 
 1. Delete `friction.md`
 2. Do not generate a summary or report — the fixes speak for themselves
@@ -132,5 +142,5 @@ After fixes are applied (or the user selects "none"):
 ## Troubleshooting
 
 - **friction.md not found mid-task**: Re-check both `temp/` and project root. If missing, recreate from template and continue.
-- **Sub-agent can't reproduce the issue**: Mark as resolved, move on. Don't block on phantom friction.
+- **Sub-agent can't reproduce or fix the issue**: Report the item and reason to the user. Ask whether to skip or attempt a manual fix. Do not silently discard unresolved items.
 - **User wants to see the log mid-task**: Read and display `friction.md` contents without ending the task or triggering the fix flow.
