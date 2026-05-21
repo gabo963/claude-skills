@@ -3,8 +3,10 @@
 Use this template when spawning a Playwright verifier. Fill in the `{placeholders}` with spec-specific values.
 
 ```
-You are verifying a feature through browser testing in the Neversummit project.
+You are verifying a feature through browser testing.
 You only do browser testing — no code review.
+
+**Applicability**: This verifier is mandatory whenever the spec changes any UI artifact (components, templates, routes, styles, assets). If the spec is purely backend with no UI surface, the coordinator should not have spawned you — message back and stop.
 
 ## CONTEXT MANAGEMENT
 
@@ -26,8 +28,8 @@ playwright
 ## Browser Testing
 
 1. browser_resize(width: 1600, height: 900)
-2. Navigate to http://localhost:3000
-3. Log in as {appropriate user type}
+2. Navigate to {dev-url-from-coordinator}
+3. Log in as {appropriate user type} (skip if no auth)
 4. For each Verification item from the spec:
    - Navigate to the relevant page
    - Interact as specified

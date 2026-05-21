@@ -23,7 +23,7 @@ You are the **coordinator / team lead**. You orchestrate work by spawning agents
 - Write code — delegate to worker agents
 - Read source files — delegate to Explore agents
 - Read spec files directly — delegate to Picker/Slicer agents
-- Run REPL evaluations (except dev env startup/restart)
+- Run build/REPL/eval commands directly (except dev env startup/restart)
 - Skip verification or state file updates
 - Reuse teammates across specs or slices
 - Leave branches when done
@@ -32,7 +32,7 @@ You are the **coordinator / team lead**. You orchestrate work by spawning agents
 
 1. Check for `docs/ai/coordination-state.md` — if exists, resume from recorded phase
 2. Read `docs/ai/specs/TRACKER.md`
-3. **Start dev environment** following STARTUP.md (Docker, REPL, shadow-cljs, seed DB)
+3. **Start dev environment** per project conventions (e.g. STARTUP.md / README — Docker, dev server, DB, REPL as applicable)
 4. Create team: `TeamCreate(team_name: "backlog")`
 5. Report to user: environment running, team created, listing ready specs
 
@@ -59,7 +59,7 @@ Write `docs/ai/coordination-state.md` at every phase transition. Required fields
 - **Verifier**: teammate name or `n/a`
 - **Attempt**: `1`, `2`, or `3`
 - **Issues**: any blockers or problems
-- **Completed This Session**: list of `{spec-name} (merged to master, commit {short-hash})`
+- **Completed This Session**: list of `{spec-name} (merged to default branch, commit {short-hash})`
 
 ## Coordination Loop
 
@@ -141,27 +141,34 @@ If complete → Phase 5b. Shutdown all workers. Write coordination state (phase 
 
 ### Phase 5b — Compilation Check
 
-Before verification, confirm the project compiles cleanly across all three layers. Spawn a **Compilation Check agent** (general-purpose, bypassPermissions) that runs:
+Before verification, confirm the project compiles/typechecks cleanly. Spawn a **Compilation Check agent** (general-purpose, bypassPermissions) that:
 
-1. **Frontend**: `npx shadow-cljs compile main` — check for ClojureScript warnings/errors
-2. **Backend**: Evaluate `(require 'neversummit.lambda.handler :reload-all)` in the Clojure REPL — check for server-side compilation errors
-3. **SCSS**: `npx sass resources/css/app.scss:resources/public/css/app.css` — check for stylesheet syntax/compilation errors
-
-Agent reports: **PASS** (all three clean) or **FAIL** (lists issues per layer).
+1. **Auto-discovers** the project's build/typecheck commands by inspecting available manifests and docs:
+   - `package.json` scripts (`build`, `typecheck`, `lint`)
+   - `tsconfig.json` (`tsc --noEmit`)
+   - `deps.edn` / `project.clj` aliases
+   - `Makefile` targets
+   - `Cargo.toml` (`cargo check`)
+   - `pyproject.toml` / `setup.py` (mypy, ruff)
+   - `go.mod` (`go build ./...`, `go vet ./...`)
+   - Style/asset pipelines (sass, postcss, tailwind) if present
+   - Any commands documented in `CLAUDE.md`, `README.md`, or `STARTUP.md`
+2. **Runs each discovered command** and captures warnings/errors per layer.
+3. **Reports** PASS (all clean) or FAIL (lists issues per layer, with the command that produced them).
 
 - All PASS → Phase 6
-- Any FAIL → spawn a fix worker targeting the specific compilation errors, then re-run the compilation check (max 2 fix cycles). If still failing after 2 cycles, ask user for guidance.
+- Any FAIL → spawn a fix worker targeting the specific errors, then re-run the compilation check (max 2 fix cycles). If still failing after 2 cycles, ask user for guidance.
 
 Write coordination state (phase = compiling).
 
 ### Phase 6 — Verify
 
-Spawn **two verifiers simultaneously**:
+Spawn verifiers in parallel:
 
-1. **Verifier-Code** (see `references/verifier-code-prompt.md`): code review against spec and conventions
-2. **Verifier-Playwright** (see `references/verifier-playwright-prompt.md`): browser testing of verification items
+1. **Verifier-Code** (always — see `references/verifier-code-prompt.md`): code review against spec and conventions
+2. **Verifier-Playwright** (mandatory if the spec changes any UI artifact — components, templates, routes, styles, assets; skip for backend-only specs — see `references/verifier-playwright-prompt.md`): browser testing of verification items
 
-Both run in parallel. Coordinator combines verdicts:
+Coordinator combines verdicts:
 
 - Both PASS → Phase 8
 - Either NEEDS FIXES → Phase 7
@@ -182,7 +189,7 @@ Shutdown verifiers. Write coordination state (phase = verified).
 
 Spawn a **Merger agent** (see `references/merger-prompt.md`):
 
-- `git checkout master && git merge spec/{spec-name} --no-ff -m "Implement {spec-name}"`
+- Detect the default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, fallback `main`), then `git checkout $DEFAULT && git merge spec/{spec-name} --no-ff -m "Implement {spec-name}"`
 - `git branch -d spec/{spec-name}`
 - Update spec file: Status = `done`, Completed = today's date, add "What Was Built" summary
 - Update TRACKER.md: move from Active to Done
@@ -241,26 +248,26 @@ User says: "work the backlog"
 Actions:
 1. Read TRACKER.md → `sc-deps-upgrade` is highest priority, ready
 2. Create branch `spec/sc-deps-upgrade`
-3. Spawn Slicer → produces 1 slice: "Update deps.edn" (files: `deps.edn`; skills: `clojure`)
+3. Spawn Slicer → produces 1 slice: "Update dependency manifest" (files: dependency manifest; skills: project's language skill)
 4. Spawn 1 worker with that slice
 5. Worker completes in ~8 turns
-6. Spawn Verifier-Code + Verifier-Playwright in parallel → both PASS
-7. Spawn Merger → merged to master, commit `abc1234`
+6. Spawn Verifier-Code (no UI changes, so Playwright is skipped) → PASS
+7. Spawn Merger → merged to default branch, commit `abc1234`
 
 Result: Spec done, TRACKER updated, branch cleaned up, loop to next spec.
 
 ### Example 2: Large Spec with Parallel Slices
 
-Spec `sc-student-forms` has 6 files across backend and frontend.
+Spec `student-forms` has 6 files across backend and frontend.
 
 Actions:
 1. Spawn Slicer → produces 3 slices:
-   - Slice 1: Datomic schema + resolvers (2 files, skills: `datomic, clojure, pathom`)
-   - Slice 2: Form component + CSS (2 files, skills: `fulcro-defsc, rad-sc-form, clojure`)
-   - Slice 3: Route integration (1 file, skills: `fulcro-statechart-routing, clojure`) — depends on Slice 2
+   - Slice 1: backend schema + handlers (2 files, skills matching the backend stack)
+   - Slice 2: UI component + styles (2 files, skills matching the frontend stack)
+   - Slice 3: route/integration wiring (1 file, skills matching routing) — depends on Slice 2
 2. Spawn Slice 1 + Slice 2 workers in parallel (independent, disjoint files)
 3. Both complete → spawn Slice 3 worker (was blocked on Slice 2)
-4. Slice 3 completes → verify → merge
+4. Slice 3 completes → verify (Verifier-Code + Verifier-Playwright, since this spec changes UI) → merge
 
 Result: 3 small-scoped workers instead of 1 large worker. No context exhaustion.
 
@@ -283,8 +290,8 @@ Result: Work continues without losing progress.
 | Worker keeps dying mid-slice | Slice is still too large — re-slice into smaller pieces |
 | Teammate silent (3+ idles, no progress) | Nudge twice → shutdown → check checkpoint + git status → spawn replacement |
 | Verifier reports FAIL | Log reason, ask user for guidance before continuing |
-| Dev environment won't start | `curl -s localhost:3000/health` → restart REPL: `(development/start)` → if Docker down: `docker compose up -d` first |
-| REPL state corrupt | `(development/stop)` then `(development/restart)` → if persistent: restart from scratch, notify worker |
+| Dev environment won't start | Restart the dev server per project conventions (STARTUP.md / README). If containers are down, bring them up first. Verify via the project's health-check endpoint or process check. |
+| REPL / dev process state corrupt | Stop and restart per project conventions. If the problem persists, restart from scratch and notify any active worker. |
 | Session dies mid-spec | Branch `spec/{name}` has partial work → restart with `/backlog-coordinator` → reads coordination-state.md → resumes |
 | Branch conflicts on merge | Should not happen with file-level overlap analysis; if it does, resolve manually |
 | Compilation check fails repeatedly | Log specific errors, ask user for guidance — may be a pre-existing issue |

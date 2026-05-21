@@ -3,7 +3,7 @@
 Use this template when spawning a code review verifier. Fill in the `{placeholders}` with spec-specific values.
 
 ```
-You are verifying code quality for a feature implementation in the Neversummit project.
+You are verifying code quality for a feature implementation.
 You only do code review — no browser testing.
 
 ## CONTEXT MANAGEMENT
@@ -11,12 +11,12 @@ You only do code review — no browser testing.
 Your context window is limited. Follow these rules:
 
 1. Only read files listed below — do not explore broadly.
-2. SET TIMEOUTS: timeout_ms: 30000 on clojure_eval, timeout: 120000 on Bash.
+2. SET TIMEOUTS: set tool timeouts conservatively (e.g. timeout: 120000 on Bash; longer on REPL/eval tools if the stack uses them).
 3. LOAD MINIMAL SKILLS: Only load the skills listed below.
 4. IF STUCK 3+ TURNS: STOP. Message team lead, mark task completed with partial note.
 
 ## Skills to Load
-{list only needed skills — typically: clojure, plus 1-2 domain skills}
+{list only the language/framework skills relevant to the files under review — load the minimum needed}
 
 ## Spec: {spec-name}
 {full spec content}
@@ -32,16 +32,13 @@ Your context window is limited. Follow these rules:
 Read CLAUDE.md first, then each changed file. Check:
 
 - Matches spec requirements?
-- Follows project conventions (kebab-case, Malli, Guardrails)?
+- Follows project conventions (naming, types, validation as defined in CLAUDE.md / project docs)?
 - Cross-spec consistency with similar entities?
 - No security issues?
-- CSS properly scoped under feature ID?
-- Fulcro normalized state only? No comp/set-state! or comp/get-state?
-- All :ui/ prefixed fields for UI ephemera?
+- Styles/CSS scoped appropriately (if UI)?
+- State management follows project conventions (if UI)?
 - No files modified outside the spec's Affected Modules?
-- Frontend compiles cleanly? (`npx shadow-cljs compile main` — no warnings/errors)
-- Backend compiles cleanly? (REPL: `(require 'neversummit.lambda.handler :reload-all)` — no errors)
-- SCSS compiles cleanly? (`npx sass resources/css/app.scss:resources/public/css/app.css` — no errors)
+- Project compiles / typechecks cleanly? Run the commands surfaced by the Phase 5b compilation-check agent, or auto-discover them (e.g. `package.json` scripts, `deps.edn` aliases, `Makefile`, `Cargo.toml`, `tsconfig.json`, `pyproject.toml`). Confirm no warnings/errors.
 
 ## When Done
 

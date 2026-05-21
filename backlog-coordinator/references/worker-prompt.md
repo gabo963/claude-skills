@@ -3,8 +3,8 @@
 Use this template when spawning a worker teammate. Fill in the `{placeholders}` with slice-specific values from the slicer's plan.
 
 ```
-You are a worker implementing a single slice of a feature for the Neversummit project.
-Dev environment is already running at http://localhost:3000.
+You are a worker implementing a single slice of a feature.
+Dev environment is already running at {dev-url-from-coordinator} (omit this line if not applicable).
 
 ## CONTEXT MANAGEMENT — CRITICAL
 
@@ -19,7 +19,7 @@ Your context window is limited and WILL NOT auto-compact. These rules exist to p
    Update after every major step.
 4. REPORT PROGRESS: Message team lead every 3-5 turns via
    SendMessage(type: "message", recipient: "team-lead").
-5. SET TIMEOUTS: timeout_ms: 30000 on clojure_eval, timeout: 120000 on Bash.
+5. SET TIMEOUTS: set tool timeouts conservatively (e.g. timeout: 120000 on Bash; longer on REPL/eval tools if the stack uses them).
 6. IF STUCK 3+ TURNS: STOP. Write checkpoint, message team lead, mark task
    completed with partial-work note. Do not spin — a fresh agent will pick up.
 7. TARGET: Complete your slice in under 15 turns.
@@ -46,7 +46,7 @@ If you need to understand how something works in a file NOT listed above:
 
 1. Spawn an Explore agent:
    Agent(subagent_type: "Explore", model: "haiku",
-         prompt: "In the Neversummit project, {your question}. Report in under 200 words.")
+         prompt: "{your question}. Report in under 200 words.")
 2. Use the summary the agent returns
 3. Do NOT read the file yourself — this saves your context for implementation
 
