@@ -76,19 +76,22 @@ if (!CDP_PORT) {
 const CDP_URL = `http://localhost:${CDP_PORT}`;
 
 /**
- * Get ARIA snapshot using Playwright's internal _snapshotForAI() method
- * This returns a YAML-formatted accessibility tree with refs (e.g., ref=e5)
+ * Get ARIA snapshot as a YAML-formatted accessibility tree with refs (e.g., ref=e5)
  *
  * IMPORTANT: This also registers the refs so aria-ref= locators work.
  *
- * Note: Different Playwright versions return different formats:
- * - 1.58+ alpha: returns { full, incremental }
- * - 1.56.x: returns string directly
+ * Note: Different Playwright versions expose this differently:
+ * - 1.61+: public page.ariaSnapshot({ mode: 'ai' }) (internal _snapshotForAI removed)
+ * - 1.58+ alpha: page._snapshotForAI() returns { full, incremental }
+ * - 1.56.x: page._snapshotForAI() returns string directly
  */
 async function getAriaSnapshot(page) {
-    const snapshot = await page._snapshotForAI();
-    // Handle both object format (1.58+) and string format (1.56.x)
-    return typeof snapshot === 'string' ? snapshot : snapshot.full;
+    if (typeof page._snapshotForAI === 'function') {
+        const snapshot = await page._snapshotForAI();
+        // Handle both object format (1.58+) and string format (1.56.x)
+        return typeof snapshot === 'string' ? snapshot : snapshot.full;
+    }
+    return await page.ariaSnapshot({ mode: 'ai' });
 }
 
 /**
