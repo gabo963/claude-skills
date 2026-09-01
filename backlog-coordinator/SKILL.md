@@ -1,300 +1,174 @@
 ---
 name: backlog-coordinator
-description: Coordinates backlog implementation using Agent Teams with parallelization. Use when asked to "coordinate", "work the backlog", or "implement specs".
+description: Coordinates backlog implementation as a dynamic Workflow — the main session orchestrates, a scripted Workflow slices, implements, verifies and commits each spec on the current branch. Use when asked to "coordinate", "work the backlog", or "implement specs".
 ---
 
 # Backlog Coordinator
 
-Autonomously coordinate backlog implementation using Agent Teams. Picks specs, slices them into small parallel tasks, spawns workers and verifiers, manages branches, and updates TRACKER.md.
+The main session is the **orchestrator**: it decides which specs to work, starts the dev environment, keeps state, and launches Claude's Workflow tool with the script shipped in this skill. The Workflow does the heavy lifting (scope → slice → workers → compile check → verify → finalize), running file-segregated specs in parallel, and reports back. You read the result, update state, and loop.
+
+Invoking this skill is the user's opt-in to run the Workflow tool. Do not ask again.
 
 # Instructions
 
 ## Quick Start
 
 **Triggers**: "coordinate", "work the backlog", "implement specs", "resume coordinating"
-**Entry**: Check for resume state → start dev env → create team → pick specs → slice → dispatch workers.
+**Entry**: resume check → read TRACKER → confirm spec selection → start dev env → launch Workflow → handle results → loop.
 
 ## Role
 
-You are the **coordinator / team lead**. You orchestrate work by spawning agents for every phase. Your context must stay lean so you can survive an entire backlog session.
+You orchestrate. Your context must stay lean so you can survive an entire backlog session.
 
-**Constraints** — do not:
+**Do not:**
 
-- Write code — delegate to worker agents
-- Read source files — delegate to Explore agents
-- Read spec files directly — delegate to Picker/Slicer agents
-- Run build/REPL/eval commands directly (except dev env startup/restart)
-- Skip verification or state file updates
-- Reuse teammates across specs or slices
-- Leave branches when done
+- Write code, read source files, or read spec bodies — the Workflow agents do that
+- Run build/test/REPL commands yourself (dev env startup/restart is the exception)
+- Create, switch, merge, or delete branches — ever
+- Push, unless the user explicitly asks
+- Skip state-file updates
+
+## Git Rules (fixed, no need for the user to repeat them)
+
+- **Stay on the current branch.** Whatever `git branch --show-current` returns at session start is where all work lands. No `spec/*` branches, no merges.
+- **Commit as you go.** The Workflow commits after every slice group, after every fix cycle, and once more when it marks the spec done and updates TRACKER.md. This is durable authorization to commit on the current branch; do not ask "master or branch?".
+- A dirty working tree at start is fine: commits only add the files each slice touched. Mention pre-existing uncommitted changes to the user, never stash or reset them.
 
 ## Session Start Checklist
 
-1. Check for `docs/ai/coordination-state.md` — if exists, resume from recorded phase
-2. Read `docs/ai/specs/TRACKER.md`
-3. **Start dev environment** per project conventions (e.g. STARTUP.md / README — Docker, dev server, DB, REPL as applicable)
-4. Create team: `TeamCreate(team_name: "backlog")`
-5. Report to user: environment running, team created, listing ready specs
+1. Check for `docs/ai/coordination-state.md` — if it exists, resume (see State Management)
+2. Read `docs/ai/specs/TRACKER.md` (this is the one file you read yourself)
+3. **Confirm spec selection** (see below)
+4. **Start dev environment** per project conventions (STARTUP.md / README — Docker, dev server, DB, REPL as applicable). Note the dev URL if there is one.
+5. Record `BRANCH=$(git branch --show-current)`
+6. Report to user: branch, environment status, the ordered list of specs about to run
 
-## Spec Readiness Check
+## Spec Selection
 
-Before starting any spec, verify:
+If the invocation already says what to work on (e.g. "work the P0 specs", "implement sso-config and student-forms", "work everything ready"), use that.
 
-- No `TBD`, `TODO`, `???`, or `(unresolved)` in Requirements or Approach
-- All `Depends on` dependencies are Done in TRACKER.md
-- Has Approach section with specific files to create/modify
-- Has Verification section with testable items
+If it does not, **ask before launching anything** with AskUserQuestion, building the options from TRACKER.md:
 
-If not ready → skip, log reason in coordination state, move to next.
+- Only P0 specs (Recommended when P0 specs exist)
+- P0 and P1 specs
+- Everything not Done, in priority order
+- A specific spec or list (user types it)
+
+Selected specs are passed in TRACKER priority order. Specs whose `Depends on` entries are not Done are deferred, not dropped: after each Workflow run, re-read TRACKER.md and queue any selected spec whose dependencies are now Done.
+
+The Workflow does the full readiness check per spec (no `TBD`/`TODO`/`???`/`(unresolved)` in Requirements or Approach, Approach names concrete files, Verification section present) and returns `skipped` with reasons for any that fail it.
+
+## Parallelism Rule (fixed)
+
+Specs are **file-segregated**. Each spec is scoped to the set of files it will touch, and that set travels with it through the run and into the result. Specs whose file sets are disjoint run **at the same time** on the shared branch; specs that share any file (or a directory containing it) run **one after the other**. The Workflow computes this itself; you only pass the ordered spec list.
 
 ## State Management
 
-Write `docs/ai/coordination-state.md` at every phase transition. Required fields:
+Write `docs/ai/coordination-state.md` at every transition. Fields:
 
-- **Current Spec Name**: the spec being worked on
-- **Phase**: one of `picking`, `slicing`, `workers-active`, `workers-done`, `compiling`, `verifying`, `verified`, `merging`
-- **Branch**: `spec/{spec-name}`
-- **Active Workers**: list of `{slice-name}: {worker-name}`
-- **Parallel Batch**: list of spec names if running specs in parallel
-- **Verifier**: teammate name or `n/a`
-- **Attempt**: `1`, `2`, or `3`
-- **Issues**: any blockers or problems
-- **Completed This Session**: list of `{spec-name} (merged to default branch, commit {short-hash})`
+- **Branch**: the current branch
+- **Selection**: what the user chose (e.g. "P0 specs")
+- **Phase**: `selecting` | `workflow-running` | `between-runs` | `needs-user` | `finished`
+- **Workflow Run**: the `runId` from the Workflow tool result (needed for `resumeFromRunId`), plus the specs passed in
+- **Queued**: selected specs not yet run, in order
+- **Needs User**: specs the Workflow returned as `needs-user`, with the reason
+- **Completed This Session**: list of `{spec-name} (commits {short-hashes})`
+
+**Resume**: If the state file says `workflow-running`, the previous session died mid-run. Same session → relaunch the Workflow with `resumeFromRunId` (cached stages return instantly). New session → check `git log` and `git status` for what landed, then relaunch the Workflow for the specs that are not Done in TRACKER.md; the slicer sees committed partial work and the worker prompt tells workers to check `git diff` first.
 
 ## Coordination Loop
 
-### Phase 1 — Pick Spec & Branch
+### 1. Launch the Workflow
 
-- Read TRACKER.md → highest-priority ready spec
-- Readiness check (see above)
-- `git checkout -b spec/{spec-name}`
-- Write coordination state
-- Update spec file: Status = `active`, Owner = `backlog-coordinator`
-- Update TRACKER.md: move row to Active section
-
-**Cross-spec parallelization**: If the picker identifies multiple ready specs with **zero file overlap at the individual file level**, they may run in parallel on separate branches (max 3 concurrent workers total). Two specs in the same module are always serial unless file-level analysis proves they touch completely different files.
-
-### Phase 2 — Slice the Spec
-
-Spawn a **Slicer agent** to break the spec into fine-grained slices. See `references/slicer-prompt.md`.
-
-The slicer reads the spec's Approach + Affected Modules, examines existing files, and produces a **slice plan**:
-
-- Each slice covers **1-3 files** to create or modify
-- Each slice has a specific description of what to do in each file
-- Each slice lists **only the skills needed** for that slice
-- Each slice lists **only the reference files** needed
-- Slices are marked as **independent** (disjoint files, no ordering dependency) or **dependent** (must run after a predecessor)
-
-This is the key mechanism that prevents workers from running out of context. By scoping each worker to 1-3 files with minimal skill loading, the worker has plenty of context for actual implementation.
-
-Write coordination state (phase = slicing).
-
-### Phase 3 — Spawn Workers
-
-Using the slice plan from Phase 2:
-
-- **Independent slices**: spawn workers in parallel — multiple `Agent()` calls in a single message
-- **Dependent slices**: spawn sequentially after predecessor completes
-- Each worker gets its own slice prompt (see `references/worker-prompt.md`)
-- Max 3 concurrent workers across all specs and slices
+Expand `~` to the absolute home directory. Then:
 
 ```
-TaskCreate(subject: "Implement {spec-name} slice {N}")
-
-Agent tool:
-  subagent_type: general-purpose
-  team_name: "backlog"
-  name: "worker-{spec-name}-s{N}"
-  mode: bypassPermissions
-  prompt: (Worker Prompt — see references/worker-prompt.md)
-
-TaskUpdate(taskId: "...", owner: "worker-{spec-name}-s{N}", status: "in_progress")
+Workflow(
+  scriptPath: "~/.claude/skills/backlog-coordinator/workflows/spec-pipeline.js",
+  args: {
+    specs: [{ name: "sso-config", file: "docs/ai/specs/sso-config.md" }, ...],  // ordered, ready-by-dependency
+    branch: "<current branch>",
+    devUrl: "http://localhost:3000",   // or null if there is no web UI
+    today: "YYYY-MM-DD",
+    skillDir: "~/.claude/skills/backlog-coordinator",   // absolute
+    notes: "",                          // optional free text forwarded to every agent (user guidance, retry hints)
+    maxWorkers: 3,                      // optional, concurrent workers across all specs
+    maxParallelSpecs: 3                 // optional, file-segregated specs running at once
+  }
+)
 ```
 
-Write coordination state (phase = workers-active).
+Pass `args` as a real JSON object, never a stringified one. Write state (`workflow-running`, runId). The tool returns immediately; a task notification arrives when it finishes. Do not poll. The user can watch progress with `/workflows`.
 
-### Phase 4 — Monitor Workers
+Agent count: roughly 7 + slices + fix cycles per spec, so a run over several specs exceeds the default 15-agent guideline. That is the intended scale of this skill.
 
-Watch for (per-worker independently):
+### 2. What the Workflow does (for your understanding — you do none of this)
 
-- **Progress reports**: Worker should message every 3-5 turns
-- **Completion**: Move that slice to done, check if more slices to spawn
-- **Idle notifications**: Check if it sent a progress/completion message
-- **Silence** (3+ idle notifications, no substantive message):
-  1. Message: "What is your current status? What files have you changed?"
-  2. If no useful response after 2 nudges → shutdown_request
-  3. Check `docs/ai/worker-checkpoint.md` + `git status`
-  4. Spawn replacement worker with checkpoint context
+1. **Scope** — one cheap agent per spec, all in parallel: readiness check plus the file set the spec will touch. Not-ready specs come back `skipped`. Specs are then batched: disjoint file sets share a batch (up to `maxParallelSpecs`), overlapping ones go to later batches. `references/scope-prompt.md`
+2. **Slice** — per spec in the batch, in parallel: a slice plan (1–3 files per slice, minimal skills, dependency-ordered) inside the allowed file set. Overlap is re-checked on the actual slice files; a spec that now collides with another in its batch is deferred and re-sliced later against the updated tree. `references/slicer-prompt.md`
+3. **Implement** — every kept spec at once. A start agent marks the spec `active` in the spec file and TRACKER.md and commits `Start {spec}`. Slices are grouped by dependency and file overlap; independent slices run in parallel (cap `maxWorkers` across all specs), each in a fresh worker scoped to its files. A dead worker gets exactly one replacement. Each group is committed by a committer agent. All git writes go through one lock, so concurrent specs never race on the index. `references/worker-prompt.md`
+4. **Compile** — only after the whole batch finished implementing, so errors are attributable by file. Auto-discovers build/typecheck/lint commands; errors in the spec's files (or caused by its diff) fail the check, errors elsewhere are informational. On failure a fix worker runs and commits, max 2 cycles. `references/compile-check-prompt.md`
+5. **Verify** — code review always; browser check with the `playwright` skill when the plan flags UI changes, one browser at a time across specs. NEEDS_FIXES with fewer than 3 issues → fix worker + commit + re-verify, max 2 cycles. FAIL or 3+ issues → `needs-user`. `references/verifier-code-prompt.md`, `references/verifier-playwright-prompt.md`
+6. **Finalize** — sets Status `done`, Completed date, "What Was Built"; moves the TRACKER row to Done; commits `Update tracker: {spec} done`. `references/finalizer-prompt.md`
 
-Workers complete at different times. As each completes, immediately spawn dependent slices or proceed to Phase 5.
+### 3. Handle the result
 
-When all slices report completion → Phase 5.
+The Workflow returns `{ branch, results: [{ spec, status, files, commits, reason, summaries, verify }] }` — `files` is the spec's tracked file set — with status:
 
-### Phase 5 — Assess Worker Output
+| Status | Meaning | Your action |
+|--------|---------|-------------|
+| `done` | Verified, TRACKER updated, committed | Add to Completed |
+| `skipped` | Failed readiness check | Report reasons; leave in Queued only if the user fixes the spec |
+| `needs-user` | Incomplete slices, compile still failing, verifier FAIL, or 3+ review issues | Stop the loop for that spec; put it in Needs User; ask the user how to proceed. To retry, relaunch with that spec and the user's guidance in `notes` |
+| `failed` | An agent returned nothing or the plan was invalid | Relaunch once for that spec; if it fails again, treat as `needs-user` |
 
-- All verification items from all slices addressed?
-- Checkpoint files show all slices done?
-- `git diff spec/{spec-name}` shows expected changes?
+If the notification reports an empty or odd result, read `journal.jsonl` in the run's transcript directory before drawing conclusions.
 
-If complete → Phase 5b. Shutdown all workers. Write coordination state (phase = workers-done).
+### 4. Loop
 
-### Phase 5b — Compilation Check
+After each run: re-read TRACKER.md, queue newly ready selected specs, write state, tell the user what landed (spec, commits, verdicts). If anything is queued, launch the next Workflow immediately — do not ask permission to continue. Stop only when:
 
-Before verification, confirm the project compiles/typechecks cleanly. Spawn a **Compilation Check agent** (general-purpose, bypassPermissions) that:
-
-1. **Auto-discovers** the project's build/typecheck commands by inspecting available manifests and docs:
-   - `package.json` scripts (`build`, `typecheck`, `lint`)
-   - `tsconfig.json` (`tsc --noEmit`)
-   - `deps.edn` / `project.clj` aliases
-   - `Makefile` targets
-   - `Cargo.toml` (`cargo check`)
-   - `pyproject.toml` / `setup.py` (mypy, ruff)
-   - `go.mod` (`go build ./...`, `go vet ./...`)
-   - Style/asset pipelines (sass, postcss, tailwind) if present
-   - Any commands documented in `CLAUDE.md`, `README.md`, or `STARTUP.md`
-2. **Runs each discovered command** and captures warnings/errors per layer.
-3. **Reports** PASS (all clean) or FAIL (lists issues per layer, with the command that produced them).
-
-- All PASS → Phase 6
-- Any FAIL → spawn a fix worker targeting the specific errors, then re-run the compilation check (max 2 fix cycles). If still failing after 2 cycles, ask user for guidance.
-
-Write coordination state (phase = compiling).
-
-### Phase 6 — Verify
-
-Spawn verifiers in parallel:
-
-1. **Verifier-Code** (always — see `references/verifier-code-prompt.md`): code review against spec and conventions
-2. **Verifier-Playwright** (mandatory if the spec changes any UI artifact — components, templates, routes, styles, assets; skip for backend-only specs — see `references/verifier-playwright-prompt.md`): browser testing of verification items
-
-Coordinator combines verdicts:
-
-- Both PASS → Phase 8
-- Either NEEDS FIXES → Phase 7
-- Either FAIL → log reason, ask user for guidance
-
-**Playwright serialization**: Only one Verifier-Playwright agent can control the browser at a time. If multiple specs complete workers simultaneously, code reviews all run in parallel, but Playwright testing is queued.
-
-Write coordination state (phase = verifying).
-
-### Phase 7 — Handle Fixes
-
-- Fewer than 3 issues: spawn a fix worker with specific instructions, then re-verify (max 2 fix cycles)
-- 3+ issues or FAIL: log reason, ask user for guidance
-
-Shutdown verifiers. Write coordination state (phase = verified).
-
-### Phase 8 — Merge and Update
-
-Spawn a **Merger agent** (see `references/merger-prompt.md`):
-
-- Detect the default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, fallback `main`), then `git checkout $DEFAULT && git merge spec/{spec-name} --no-ff -m "Implement {spec-name}"`
-- `git branch -d spec/{spec-name}`
-- Update spec file: Status = `done`, Completed = today's date, add "What Was Built" summary
-- Update TRACKER.md: move from Active to Done
-- Commit: `"Update tracker: {spec-name} done"`
-
-Coordinator receives one-line confirmation from merger.
-
-**Merge serialization**: Only one merger at a time to avoid TRACKER.md conflicts.
-
-- Clean up `docs/ai/worker-checkpoint.md`
-- Write coordination state (add to Completed, clear current spec)
-- Shutdown all remaining teammates for this spec
-- Tell user what was completed → Loop to Phase 1
-
-## Teammate Lifecycle & Context Limits
-
-1. **Fresh teammate per slice** — never reuse across slices or specs
-2. **Fresh teammate per role** — don't reuse a worker as a verifier
-3. **Shutdown after use** — send shutdown_request when done
-4. **Workers scoped to 1-3 files** — slicer ensures small scope
-5. **Workers load minimal skills** — only what their slice needs
-6. **Workers delegate exploration** — spawn Explore sub-agents, never read broadly
-7. **Independent slices run in parallel** — slicer identifies which are safe
-8. **Max 3 concurrent workers** — across all specs and slices
-9. **Playwright testing serialized** — browser is a singleton
-10. **Merges serialized** — TRACKER.md is a shared resource
-
-Autocompaction does NOT reliably work for teammates. When a teammate fills its context window, it may error and stop.
-
-**If a teammate errors out**: check checkpoint + git status, spawn replacement with checkpoint context. Do NOT try to resume — always spawn fresh. If teammates consistently die: the slicer made slices too large, re-slice into smaller pieces.
-
-## Execution Mode
-
-**Never stop until the backlog is empty.** After completing each spec, immediately pick the next ready spec and continue. Do not ask the user for permission to continue — just keep going. Only stop when:
-- The backlog has zero ready specs (all remaining are blocked or need refinement)
+- Nothing selected remains ready (report which specs are blocked and why)
+- Every remaining spec is `needs-user` (ask, then continue with the answer)
 - The dev environment is broken and cannot be recovered
-- The user explicitly asks you to stop
+- The user says stop
 
 ## End of Session
 
-When backlog is empty or you're stopping:
-
-1. Ensure no orphan branches: `git branch` — delete any `spec/*` branches
-2. Ensure all teammates are shut down
-3. Clean up team: `TeamDelete`
-4. Clean up runtime files: `docs/ai/worker-checkpoint.md`
-5. Keep `docs/ai/coordination-state.md` (useful for next session)
-6. Tell user: final summary of what was completed
+1. Confirm `git status` shows nothing from this session left uncommitted (pre-existing user changes stay as they were)
+2. Keep `docs/ai/coordination-state.md` with Phase `finished` (useful next session)
+3. Final summary: specs completed with commits, specs skipped/needing the user with reasons, branch name
 
 ## Examples
 
-### Example 1: Small Spec (1-2 files)
+### Example 1: "work the backlog" with no selection
 
-User says: "work the backlog"
+1. State file absent, TRACKER lists 2 P0, 3 P1, 4 P2 specs
+2. Ask: "Only P0 specs" / "P0 and P1" / "Everything" / specific → user picks P0
+3. Start dev env, branch is `feature/q3-forms`
+4. Launch Workflow with the 2 P0 specs
+5. Notification: `sc-deps-upgrade` done (commits `abc1234`, `def5678`), `sso-config` needs-user (verifier FAIL: login redirect loops)
+6. Report both, ask about `sso-config`; user says "skip the redirect check, it's a known env issue"
+7. Relaunch with `sso-config` and that sentence in `notes` → done → no P0 left → finish
 
-Actions:
-1. Read TRACKER.md → `sc-deps-upgrade` is highest priority, ready
-2. Create branch `spec/sc-deps-upgrade`
-3. Spawn Slicer → produces 1 slice: "Update dependency manifest" (files: dependency manifest; skills: project's language skill)
-4. Spawn 1 worker with that slice
-5. Worker completes in ~8 turns
-6. Spawn Verifier-Code (no UI changes, so Playwright is skipped) → PASS
-7. Spawn Merger → merged to default branch, commit `abc1234`
+### Example 2: "implement the P1 specs, then P2 as they unblock"
 
-Result: Spec done, TRACKER updated, branch cleaned up, loop to next spec.
-
-### Example 2: Large Spec with Parallel Slices
-
-Spec `student-forms` has 6 files across backend and frontend.
-
-Actions:
-1. Spawn Slicer → produces 3 slices:
-   - Slice 1: backend schema + handlers (2 files, skills matching the backend stack)
-   - Slice 2: UI component + styles (2 files, skills matching the frontend stack)
-   - Slice 3: route/integration wiring (1 file, skills matching routing) — depends on Slice 2
-2. Spawn Slice 1 + Slice 2 workers in parallel (independent, disjoint files)
-3. Both complete → spawn Slice 3 worker (was blocked on Slice 2)
-4. Slice 3 completes → verify (Verifier-Code + Verifier-Playwright, since this spec changes UI) → merge
-
-Result: 3 small-scoped workers instead of 1 large worker. No context exhaustion.
-
-### Example 3: Recovering from a Stuck Worker
-
-1. Worker `worker-sso-config-s2` has sent 3 idle notifications with no progress
-2. Coordinator nudges twice — no useful response
-3. Coordinator shuts down stuck worker
-4. Check checkpoint: slice 2 is partially done (1 of 2 files)
-5. Spawn replacement `worker-sso-config-s2b` with checkpoint context
-6. Replacement completes the remaining file
-
-Result: Work continues without losing progress.
+1. Queue P1 in order; `student-forms` P2 depends on `student-schema` P1
+2. Run 1: scoping shows `student-schema` and `sso-config` touch disjoint files → they implement at the same time; `report-export` shares the routes file with `sso-config` → second batch
+3. Run 1 finishes P1 → re-read TRACKER → `student-forms` now ready → Run 2 → finish
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| No specs pass readiness check | Report to user with list of issues per spec |
-| Worker keeps dying mid-slice | Slice is still too large — re-slice into smaller pieces |
-| Teammate silent (3+ idles, no progress) | Nudge twice → shutdown → check checkpoint + git status → spawn replacement |
-| Verifier reports FAIL | Log reason, ask user for guidance before continuing |
-| Dev environment won't start | Restart the dev server per project conventions (STARTUP.md / README). If containers are down, bring them up first. Verify via the project's health-check endpoint or process check. |
-| REPL / dev process state corrupt | Stop and restart per project conventions. If the problem persists, restart from scratch and notify any active worker. |
-| Session dies mid-spec | Branch `spec/{name}` has partial work → restart with `/backlog-coordinator` → reads coordination-state.md → resumes |
-| Branch conflicts on merge | Should not happen with file-level overlap analysis; if it does, resolve manually |
-| Compilation check fails repeatedly | Log specific errors, ask user for guidance — may be a pre-existing issue |
-| No specs ready | Report: "No ready specs. Remaining need refinement: {list}" → wait for user |
-| Playwright contention | Only one Verifier-Playwright at a time. Queue others. Prioritize higher-priority specs |
-| Worker modifies out-of-scope file | Worker should STOP and message coordinator. Coordinator decides scope |
+| No specs pass readiness | Report the reasons per spec; wait for the user |
+| Worker died and its replacement also failed | Spec returns `needs-user` with the slice named; the slice is too large — relaunch with `notes: "re-slice {slice} into smaller pieces"` |
+| Compile check fails repeatedly | `needs-user` with the report; may be pre-existing — ask |
+| Verifier FAIL | `needs-user`; ask before continuing |
+| Dev environment won't start | Restart per STARTUP.md / README; verify with the health check; then launch |
+| Session died mid-run | Resume per State Management |
+| Workflow result empty | Read the run's `journal.jsonl` before diagnosing |
+| Committer reports "none" | Nothing changed for that group; the worker summary says why |
+| Specs you expected in parallel ran one by one | Their scoped file sets overlap (the run log names the deferral); split the shared file out or accept serial |
+| Two concurrent specs stepped on each other | The scope agent missed a shared file; relaunch with `notes` naming it so scoping includes it |
+| Browser check flaky | Only one browser verifier runs at a time already; relaunch that spec with `notes` describing the flake |
