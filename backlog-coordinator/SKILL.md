@@ -69,12 +69,12 @@ Write `docs/ai/coordination-state.md` at every transition. Fields:
 - **Branch**: the current branch
 - **Selection**: what the user chose (e.g. "P0 specs")
 - **Phase**: `selecting` | `workflow-running` | `between-runs` | `needs-user` | `finished`
-- **Workflow Run**: the `runId` from the Workflow tool result (needed for `resumeFromRunId`), plus the specs passed in
+- **Workflow Run**: the `runId` from the Workflow tool result (needed for `resumeFromRunId`), plus the specs passed in and the launch args used (`model`, `lowEffortModel`, `notes`, `maxWorkers`, `maxParallelSpecs`) — a relaunch or resume must reuse them unchanged
 - **Queued**: selected specs not yet run, in order
 - **Needs User**: specs the Workflow returned as `needs-user`, with the reason
 - **Completed This Session**: list of `{spec-name} (commits {short-hashes})`
 
-**Resume**: If the state file says `workflow-running`, the previous session died mid-run. Same session → relaunch the Workflow with `resumeFromRunId` (cached stages return instantly). New session → check `git log` and `git status` for what landed, then relaunch the Workflow for the specs that are not Done in TRACKER.md; the slicer sees committed partial work and the worker prompt tells workers to check `git diff` first.
+**Resume**: If the state file says `workflow-running`, the previous session died mid-run. Same session → relaunch the Workflow with the same args recorded in the state file plus `resumeFromRunId` (cached stages return instantly; changed args lose the cache). New session → check `git log` and `git status` for what landed, then relaunch the Workflow for the specs that are not Done in TRACKER.md; the slicer sees committed partial work and the worker prompt tells workers to check `git diff` first.
 
 ## Coordination Loop
 
@@ -93,7 +93,9 @@ Workflow(
     skillDir: "~/.claude/skills/backlog-coordinator",   // absolute
     notes: "",                          // optional free text forwarded to every agent (user guidance, retry hints)
     maxWorkers: 3,                      // optional, concurrent workers across all specs
-    maxParallelSpecs: 3                 // optional, file-segregated specs running at once
+    maxParallelSpecs: 3,                // optional, file-segregated specs running at once
+    model: "opus"                       // optional, model for every Workflow agent; omit to inherit the session model
+    // lowEffortModel: "sonnet"         // optional, cheaper model for the bookkeeping agents (scope, start, commit, finalize); defaults to model
   }
 )
 ```
@@ -120,7 +122,9 @@ The Workflow returns `{ branch, results: [{ spec, status, files, commits, reason
 | `done` | Verified, TRACKER updated, committed | Add to Completed |
 | `skipped` | Failed readiness check | Report reasons; leave in Queued only if the user fixes the spec |
 | `needs-user` | Incomplete slices, compile still failing, verifier FAIL, or 3+ review issues | Stop the loop for that spec; put it in Needs User; ask the user how to proceed. To retry, relaunch with that spec and the user's guidance in `notes` |
-| `failed` | An agent returned nothing or the plan was invalid | Relaunch once for that spec; if it fails again, treat as `needs-user` |
+| `failed` | An agent returned nothing or the plan was invalid | Relaunch once for that spec with the same args; if it fails again, treat as `needs-user` |
+
+If every spec came back `failed` at Scope with "scope agent returned nothing" and you set a model override, the value may have been rejected — check the `model:` line the Workflow logged at startup (shown in `/workflows`) and the run's `journal.jsonl`, and fix the value before relaunching.
 
 If the notification reports an empty or odd result, read `journal.jsonl` in the run's transcript directory before drawing conclusions.
 
@@ -162,6 +166,7 @@ After each run: re-read TRACKER.md, queue newly ready selected specs, write stat
 | Problem | Solution |
 |---------|----------|
 | No specs pass readiness | Report the reasons per spec; wait for the user |
+| Every spec `failed` at Scope right away | A `model`/`lowEffortModel` value may have been rejected by the runtime; the `model:` line the Workflow logged at startup shows what was passed — fix it and relaunch |
 | Worker died and its replacement also failed | Spec returns `needs-user` with the slice named; the slice is too large — relaunch with `notes: "re-slice {slice} into smaller pieces"` |
 | Compile check fails repeatedly | `needs-user` with the report; may be pre-existing — ask |
 | Verifier FAIL | `needs-user`; ask before continuing |

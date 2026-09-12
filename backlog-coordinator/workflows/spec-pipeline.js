@@ -11,11 +11,16 @@ export const meta = {
   ],
 }
 
-// args: { specs: [{name, file}], branch, devUrl, today, skillDir, notes?, maxWorkers?, maxParallelSpecs? }
+// args: { specs: [{name, file}], branch, devUrl, today, skillDir, notes?, maxWorkers?, maxParallelSpecs?, model?, lowEffortModel? }
 const { specs, branch, devUrl, today, skillDir } = args
 const notes = args.notes || ''
 const MAX_WORKERS = args.maxWorkers || 3          // concurrent workers across ALL specs
 const MAX_PARALLEL_SPECS = args.maxParallelSpecs || 3
+const M = args.model ? { model: args.model } : {}   // e.g. 'opus'; omit to inherit the session model
+const LOW = args.lowEffortModel ? { model: args.lowEffortModel } : M // for effort:'low' bookkeeping agents; defaults to model
+// Every agent goes through spawn(): it applies the model override (LOW for effort:'low') so no call site can forget it.
+const spawn = (prompt, opts = {}) => agent(prompt, { ...(opts.effort === 'low' ? LOW : M), ...opts })
+log(`model: ${args.model || 'inherit'}, low-effort model: ${args.lowEffortModel || args.model || 'inherit'}`)
 const REFS = `${skillDir}/references`
 const role = file => `Read ${REFS}/${file} first and follow it exactly. Then carry out the assignment below.`
 
@@ -164,10 +169,10 @@ Reference files to read (ONLY these): CLAUDE.md${notesLine}${extra || ''}`
 }
 
 async function runWorker(prompt, label) {
-  let r = await agent(prompt, { label, phase: 'Implement', schema: WORK })
+  let r = await spawn(prompt, { label, phase: 'Implement', schema: WORK })
   if (!r) {
     log(`${label}: worker died, spawning one replacement`)
-    r = await agent(prompt + `\n\nA previous worker on this slice died mid-way. Run git status and git diff on your files to see what is already done, then complete the rest.`,
+    r = await spawn(prompt + `\n\nA previous worker on this slice died mid-way. Run git status and git diff on your files to see what is already done, then complete the rest.`,
       { label: `${label}:retry`, phase: 'Implement', schema: WORK })
   }
   return r
@@ -176,7 +181,7 @@ async function runWorker(prompt, label) {
 async function commit(spec, message, files, phaseName) {
   const uniq = [...new Set(files.map(norm))]
   if (!uniq.length) return null
-  const r = await withGit(() => agent(`You commit finished work on branch ${branch}. Do not switch branches, do not push, do not touch any other file, do not stage anything not listed.
+  const r = await withGit(() => spawn(`You commit finished work on branch ${branch}. Do not switch branches, do not push, do not touch any other file, do not stage anything not listed.
 Run: git add -- ${uniq.map(f => `'${f}'`).join(' ')}
 Then: git commit -m ${JSON.stringify(message)}
 If a listed file does not exist, drop it from the add. If nothing is staged, return commit = "none".
@@ -190,7 +195,7 @@ function fmtIssues(v) {
 
 // ---------- stages ----------
 async function scope(spec) {
-  const s = await agent(`${role('scope-prompt.md')}
+  const s = await spawn(`${role('scope-prompt.md')}
 
 Spec: ${spec.name}
 Spec file: ${spec.file}
@@ -199,7 +204,7 @@ Branch: ${branch}${notesLine}`, { label: `scope:${spec.name}`, phase: 'Scope', s
 }
 
 async function slice(spec) {
-  const plan = await agent(`${role('slicer-prompt.md')}
+  const plan = await spawn(`${role('slicer-prompt.md')}
 
 Spec: ${spec.name}
 Spec file: ${spec.file}
@@ -210,7 +215,7 @@ ${list(spec.files)}${notesLine}`, { label: `slice:${spec.name}`, phase: 'Slice',
 }
 
 async function markActive(spec) {
-  await withGit(() => agent(`Mark a backlog spec as started on branch ${branch}. Never switch branches, never push.
+  await withGit(() => spawn(`Mark a backlog spec as started on branch ${branch}. Never switch branches, never push.
 1. In ${spec.file} set Status = active and Owner = backlog-coordinator.
 2. In docs/ai/specs/TRACKER.md move the row for ${spec.name} to the Active section.
 3. git add docs/ai/specs/TRACKER.md ${spec.file} && git commit -m "Start ${spec.name}"
@@ -241,7 +246,7 @@ async function implement(spec, plan) {
 }
 
 async function compileCheck(spec, allFiles) {
-  return agent(`${role('compile-check-prompt.md')}
+  return spawn(`${role('compile-check-prompt.md')}
 
 Spec: ${spec.name}
 Branch: ${branch}
@@ -268,7 +273,7 @@ async function verifyAndFinalize(spec, plan, result) {
   const summary = result.summaries.join('\n')
   for (let i = 0; ; i++) {
     const [code, browser] = await parallel([
-      () => agent(`${role('verifier-code-prompt.md')}
+      () => spawn(`${role('verifier-code-prompt.md')}
 
 Spec: ${spec.name}
 Spec file: ${spec.file}
@@ -278,7 +283,7 @@ ${list(allFiles)}
 
 What was implemented:
 ${summary}`, { label: `verify-code:${spec.name}`, phase: 'Verify', schema: VERDICT }),
-      () => plan.uiChanges ? withBrowser(() => agent(`${role('verifier-playwright-prompt.md')}
+      () => plan.uiChanges ? withBrowser(() => spawn(`${role('verifier-playwright-prompt.md')}
 
 Spec: ${spec.name}
 Spec file: ${spec.file} (read only its Verification section)
@@ -303,7 +308,7 @@ ${summary}`, { label: `verify-browser:${spec.name}`, phase: 'Verify', schema: VE
     if (cm) result.commits.push(cm)
   }
 
-  const fin = await withGit(() => agent(`${role('finalizer-prompt.md')}
+  const fin = await withGit(() => spawn(`${role('finalizer-prompt.md')}
 
 Spec: ${spec.name}
 Spec file: ${spec.file}
@@ -327,7 +332,7 @@ const scopes = await parallel(specs.map(sp => () => scope(sp)))
 const runnable = []
 specs.forEach((sp, i) => {
   const s = scopes[i]
-  if (!s) fail(sp, 'failed', 'scope agent returned nothing')
+  if (!s) fail(sp, 'failed', 'scope agent returned nothing' + (LOW.model ? ` (model '${LOW.model}' may have been rejected — see the run's journal.jsonl)` : ''))
   else if (!s.ready) fail(sp, 'skipped', 'not ready: ' + s.reasons.join('; '))
   else runnable.push({ ...sp, files: s.files.map(norm) })
 })
