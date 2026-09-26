@@ -91,7 +91,7 @@ Workflow(
     devUrl: "http://localhost:3000",   // or null if there is no web UI
     today: "YYYY-MM-DD",
     skillDir: "~/.claude/skills/backlog-coordinator",   // absolute
-    notes: "",                          // optional free text forwarded to every agent (user guidance, retry hints)
+    notes: "",                          // optional free text (user guidance, retry hints) for scope, slicer, workers, reviewers, finalizer — not start/compile/commit
     maxWorkers: 3,                      // optional, concurrent workers across all specs
     maxParallelSpecs: 3,                // optional, file-segregated specs running at once
     model: "opus"                       // optional, model for every Workflow agent; omit to inherit the session model

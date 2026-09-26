@@ -282,7 +282,7 @@ Files to review (ONLY these):
 ${list(allFiles)}
 
 What was implemented:
-${summary}`, { label: `verify-code:${spec.name}`, phase: 'Verify', schema: VERDICT }),
+${summary}${notesLine}`, { label: `verify-code:${spec.name}`, phase: 'Verify', schema: VERDICT }),
       () => plan.uiChanges ? withBrowser(() => spawn(`${role('verifier-playwright-prompt.md')}
 
 Spec: ${spec.name}
@@ -290,7 +290,7 @@ Spec file: ${spec.file} (read only its Verification section)
 ${envLine}
 
 What was implemented:
-${summary}`, { label: `verify-browser:${spec.name}`, phase: 'Verify', schema: VERDICT })) : Promise.resolve({ verdict: 'PASS', issues: [], notes: 'no UI changes' }),
+${summary}${notesLine}`, { label: `verify-browser:${spec.name}`, phase: 'Verify', schema: VERDICT })) : Promise.resolve({ verdict: 'PASS', issues: [], notes: 'no UI changes' }),
     ])
     if (!code || !browser) return { ...result, status: 'failed', reason: 'a verifier returned nothing' }
     const verdicts = [code, browser]
@@ -317,7 +317,7 @@ Today: ${today}
 Implementation commits: ${result.commits.join(', ') || 'none'}
 
 What was built:
-${summary}`, { label: `finalize:${spec.name}`, phase: 'Finalize', schema: COMMIT, effort: 'low' }))
+${summary}${notesLine}`, { label: `finalize:${spec.name}`, phase: 'Finalize', schema: COMMIT, effort: 'low' }))
   if (!fin) return { ...result, status: 'failed', reason: 'finalizer returned nothing' }
   result.commits.push(fin.commit)
   return { ...result, status: 'done' }
